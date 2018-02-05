@@ -1,0 +1,27 @@
+From a8c3404c8622c2dd928ceda07cc148ee7c30760d Mon Sep 17 00:00:00 2001
+From: micheleberrettis1 <michele.berretti1999@gmail.com>
+Date: Sun, 21 Jan 2018 11:26:46 +0100
+Subject: [PATCH] M2 Note Camera Patch
+
+---
+ services/camera/libcameraservice/api1/CameraClient.h | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/services/camera/libcameraservice/api1/CameraClient.h b/services/camera/libcameraservice/api1/CameraClient.h
+index 55f64aaf0d1..e3a821e1665 100644
+--- a/services/camera/libcameraservice/api1/CameraClient.h
++++ b/services/camera/libcameraservice/api1/CameraClient.h
+@@ -104,6 +104,13 @@ class CameraClient : public CameraService::Client
+             camera_frame_metadata_t *metadata, void* user);
+     static void             dataCallbackTimestamp(nsecs_t timestamp, int32_t msgType, const sp<IMemory>& dataPtr, void* user);
+     // handlers for messages
++
++#ifdef MTK_HARDWARE
++    void                    handleMtkShutter(int32_t ext2);
++    void                    handleMtkGenericData(int32_t msgType, const sp<IMemory>& dataPtr,
++            camera_frame_metadata_t *metadata);
++#endif
++
+     void                    handleShutter(void);
+     void                    handlePreviewData(int32_t msgType, const sp<IMemory>& mem,
+             camera_frame_metadata_t *metadata);

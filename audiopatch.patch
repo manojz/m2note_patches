@@ -1,0 +1,58 @@
+From 2356aa7f9988cf387d4ccc58666a22981d986d04 Mon Sep 17 00:00:00 2001
+From: micheleberrettis1 <michele.berretti1999@gmail.com>
+Date: Sun, 21 Jan 2018 11:48:33 +0100
+Subject: [PATCH] M2 Note Audio Patch
+
+---
+ services/audioflinger/Threads.cpp | 32 ++++++++++++++++----------------
+ 1 file changed, 16 insertions(+), 16 deletions(-)
+
+diff --git a/services/audioflinger/Threads.cpp b/services/audioflinger/Threads.cpp
+index 5e3cd23a52d..125eef2320f 100644
+--- a/services/audioflinger/Threads.cpp
++++ b/services/audioflinger/Threads.cpp
+@@ -6463,28 +6463,28 @@ bool AudioFlinger::RecordThread::threadLoop()
+             }
+         }
+ 
+-        // Update server timestamp with server stats
++       // Update server timestamp with server stats
+         // systemTime() is optional if the hardware supports timestamps.
+         mTimestamp.mPosition[ExtendedTimestamp::LOCATION_SERVER] += framesRead;
+         mTimestamp.mTimeNs[ExtendedTimestamp::LOCATION_SERVER] = systemTime();
+ 
+         // Update server timestamp with kernel stats
+-        if (mInput->stream->get_capture_position != nullptr
+-                && mPipeSource.get() == nullptr /* don't obtain for FastCapture, could block */) {
+-           int64_t position, time;
+-            int ret = mInput->stream->get_capture_position(mInput->stream, &position, &time);
+-            if (ret == NO_ERROR) {
+-                mTimestamp.mPosition[ExtendedTimestamp::LOCATION_KERNEL] = position;
+-                mTimestamp.mTimeNs[ExtendedTimestamp::LOCATION_KERNEL] = time;
+-                // Note: In general record buffers should tend to be empty in
+-                // a properly running pipeline.
+-                //
+-                // Also, it is not advantageous to call get_presentation_position during the read
+-                // as the read obtains a lock, preventing the timestamp call from executing.
+-            }
+-        }
++//        if (mInput->stream->get_capture_position != nullptr
++//                && mPipeSource.get() == nullptr /* don't obtain for FastCapture, could block */) {
++//           int64_t position, time;
++//            int ret = mInput->stream->get_capture_position(mInput->stream, &position, &time);
++//            if (ret == NO_ERROR) {
++//                mTimestamp.mPosition[ExtendedTimestamp::LOCATION_KERNEL] = position;
++//                mTimestamp.mTimeNs[ExtendedTimestamp::LOCATION_KERNEL] = time;
++//                // Note: In general record buffers should tend to be empty in
++//                // a properly running pipeline.
++//                //
++//                // Also, it is not advantageous to call get_presentation_position during the read
++//                // as the read obtains a lock, preventing the timestamp call from executing.
++//            }
++//        }
+         // Use this to track timestamp information
+-        ALOGD("%s", mTimestamp.toString().c_str());
++        // ALOGD("%s", mTimestamp.toString().c_str());
+ 
+         if (framesRead < 0 || (framesRead == 0 && mPipeSource == 0)) {
+             ALOGE("read failed: framesRead=%zd", framesRead);

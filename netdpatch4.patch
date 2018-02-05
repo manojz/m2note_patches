@@ -1,0 +1,251 @@
+From dc0d578a69cc5a57167a508207e2198590142d51 Mon Sep 17 00:00:00 2001
+From: Robin Lee <rgl@google.com>
+Date: Wed, 20 Jul 2016 14:17:11 +0100
+Subject: [PATCH] UidRanges: use class instead of pair<uid_t, uid_t>
+
+Reuse the UidRange that was introduced in 7.0 (NYC) to ease transition
+from CommandListener to binder which supports this as a parcelable type.
+
+There is a small difference in behaviour: UidRange uses signed int32_t
+vs. uid_t being unsigned and potentially a different size. This should
+not be a problem as all of the java-side code is converting from int.
+
+Updating to use int64_t in future would be a large effort and involve
+changing the java-side UidRange class to use longs, and not fixing the
+native side would cause unit tests to fail, so it shouldn't be possible
+to overlook if that happens.
+
+Committing this early with an appropriately loud warning so that it can
+get soak time over the next year.
+
+Test: runtest -x netd_integration_test.cpp
+Change-Id: I6c217b347724ba5bfe2df28d6142a4343cb06353
+---
+ server/Android.mk                      |  4 +++-
+ server/RouteController.cpp             | 18 +++++++++-------
+ server/UidRanges.cpp                   | 38 ++++++++++++++++++++--------------
+ server/UidRanges.h                     |  9 ++------
+ server/binder/android/net/UidRange.cpp |  7 +++++++
+ server/binder/android/net/UidRange.h   |  9 ++++++++
+ 6 files changed, 54 insertions(+), 31 deletions(-)
+
+diff --git a/server/Android.mk b/server/Android.mk
+index 1b643cd..c17c0df 100644
+--- a/server/Android.mk
++++ b/server/Android.mk
+@@ -107,6 +107,7 @@ LOCAL_SRC_FILES := \
+         VirtualNetwork.cpp \
+         main.cpp \
+         oem_iptables_hook.cpp \
++        binder/android/net/UidRange.cpp \
+         binder/android/net/metrics/INetdEventListener.aidl \
+ 
+ LOCAL_AIDL_INCLUDES := $(LOCAL_PATH)/binder
+@@ -151,8 +152,9 @@ LOCAL_SRC_FILES := \
+         SockDiagTest.cpp SockDiag.cpp \
+         StrictController.cpp StrictControllerTest.cpp \
+         UidRanges.cpp \
++        binder/android/net/UidRange.cpp \
+ 
+ LOCAL_MODULE_TAGS := tests
+-LOCAL_SHARED_LIBRARIES := liblog libbase libcutils liblogwrap libsysutils
++LOCAL_SHARED_LIBRARIES := libbinder liblog libbase libcutils liblogwrap libsysutils
+ include $(BUILD_NATIVE_TEST)
+ 
+diff --git a/server/RouteController.cpp b/server/RouteController.cpp
+index fa39c89..d85bde4 100644
+--- a/server/RouteController.cpp
++++ b/server/RouteController.cpp
+@@ -39,6 +39,7 @@
+ #include "resolv_netid.h"
+ 
+ using android::base::WriteStringToFile;
++using android::net::UidRange;
+ 
+ namespace {
+ 
+@@ -775,11 +776,11 @@ WARN_UNUSED_RESULT int modifyRejectNonSecureNetworkRule(const UidRanges& uidRang
+     fwmark.protectedFromVpn = false;
+     mask.protectedFromVpn = true;
+ 
+-    for (const UidRanges::Range& range : uidRanges.getRanges()) {
++    for (const UidRange& range : uidRanges.getRanges()) {
+         if (int ret = modifyIpRule(add ? RTM_NEWRULE : RTM_DELRULE,
+                                    RULE_PRIORITY_PROHIBIT_NON_VPN, FR_ACT_PROHIBIT, RT_TABLE_UNSPEC,
+                                    fwmark.intValue, mask.intValue, IIF_LOOPBACK, OIF_NONE,
+-                                   range.first, range.second)) {
++                                   range.getStart(), range.getStop())) {
+             return ret;
+         }
+     }
+@@ -795,16 +796,17 @@ WARN_UNUSED_RESULT int modifyVirtualNetwork(unsigned netId, const char* interfac
+         return -ESRCH;
+     }
+ 
+-    for (const UidRanges::Range& range : uidRanges.getRanges()) {
+-        if (int ret = modifyVpnUidRangeRule(table, range.first, range.second, secure, add)) {
++    for (const UidRange& range : uidRanges.getRanges()) {
++        if (int ret = modifyVpnUidRangeRule(table, range.getStart(), range.getStop(), secure, add))
++                {
+             return ret;
+         }
+-        if (int ret = modifyExplicitNetworkRule(netId, table, PERMISSION_NONE, range.first,
+-                                                range.second, add)) {
++        if (int ret = modifyExplicitNetworkRule(netId, table, PERMISSION_NONE, range.getStart(),
++                                                range.getStop(), add)) {
+             return ret;
+         }
+-        if (int ret = modifyOutputInterfaceRules(interface, table, PERMISSION_NONE, range.first,
+-                                                 range.second, add)) {
++        if (int ret = modifyOutputInterfaceRules(interface, table, PERMISSION_NONE,
++                                                 range.getStart(), range.getStop(), add)) {
+             return ret;
+         }
+     }
+diff --git a/server/UidRanges.cpp b/server/UidRanges.cpp
+index b7db616..e7c7f69 100644
+--- a/server/UidRanges.cpp
++++ b/server/UidRanges.cpp
+@@ -18,19 +18,29 @@
+ 
+ #include "NetdConstants.h"
+ 
++#include <inttypes.h>
++#include <limits.h>
+ #include <stdlib.h>
+ 
+ #include <android-base/stringprintf.h>
++#include <log/log.h>
+ 
+ using android::base::StringAppendF;
++using android::net::UidRange;
+ 
+ bool UidRanges::hasUid(uid_t uid) const {
+-    auto iter = std::lower_bound(mRanges.begin(), mRanges.end(), Range(uid, uid));
+-    return (iter != mRanges.end() && iter->first == uid) ||
+-           (iter != mRanges.begin() && (--iter)->second >= uid);
++    if (uid > (unsigned) INT32_MAX) {
++        ALOGW("UID larger than 32 bits: %" PRIu64, static_cast<uint64_t>(uid));
++        return false;
++    }
++    const int32_t intUid = static_cast<int32_t>(uid);
++
++    auto iter = std::lower_bound(mRanges.begin(), mRanges.end(), UidRange(intUid, intUid));
++    return (iter != mRanges.end() && iter->getStart() == intUid) ||
++           (iter != mRanges.begin() && (--iter)->getStop() >= intUid);
+ }
+ 
+-const std::vector<UidRanges::Range>& UidRanges::getRanges() const {
++const std::vector<UidRange>& UidRanges::getRanges() const {
+     return mRanges;
+ }
+ 
+@@ -69,18 +79,14 @@ bool UidRanges::parseFrom(int argc, char* argv[]) {
+             // Invalid UIDs.
+             return false;
+         }
+-        mRanges.push_back(Range(uidStart, uidEnd));
++        mRanges.push_back(UidRange(uidStart, uidEnd));
+     }
+     std::sort(mRanges.begin(), mRanges.end());
+     return true;
+ }
+ 
+-UidRanges::UidRanges(const std::vector<android::net::UidRange>& ranges) {
+-    mRanges.resize(ranges.size());
+-    std::transform(ranges.begin(), ranges.end(), mRanges.begin(),
+-            [](const android::net::UidRange& range) {
+-                return Range(range.getStart(), range.getStop());
+-            });
++UidRanges::UidRanges(const std::vector<UidRange>& ranges) {
++    mRanges = ranges;
+     std::sort(mRanges.begin(), mRanges.end());
+ }
+ 
+@@ -97,11 +103,13 @@ void UidRanges::remove(const UidRanges& other) {
+ 
+ std::string UidRanges::toString() const {
+     std::string s("UidRanges{ ");
+-    for (Range range : mRanges) {
+-        if (range.first != range.second) {
+-            StringAppendF(&s, "%u-%u ", range.first, range.second);
++    for (const auto &range : mRanges) {
++        if (range.length() == 0) {
++            StringAppendF(&s, "<BAD: %u-%u> ", range.getStart(), range.getStop());
++        } else if (range.length() == 1) {
++            StringAppendF(&s, "%u ", range.getStart());
+         } else {
+-            StringAppendF(&s, "%u ", range.first);
++            StringAppendF(&s, "%u-%u ", range.getStart(), range.getStop());
+         }
+     }
+     StringAppendF(&s, "}");
+diff --git a/server/UidRanges.h b/server/UidRanges.h
+index 293f53f..1f1133e 100644
+--- a/server/UidRanges.h
++++ b/server/UidRanges.h
+@@ -25,16 +25,11 @@
+ 
+ class UidRanges {
+ public:
+-    // TODO: replace with AIDL type: android::net::UidRange
+-    // int32_t may not be a safe replacement for uid_t. If not, UidRange will need to change to use
+-    // a larger type first.
+-    typedef std::pair<uid_t, uid_t> Range;
+-
+     UidRanges() {}
+     UidRanges(const std::vector<android::net::UidRange>& ranges);
+ 
+     bool hasUid(uid_t uid) const;
+-    const std::vector<Range>& getRanges() const;
++    const std::vector<android::net::UidRange>& getRanges() const;
+ 
+     bool parseFrom(int argc, char* argv[]);
+     std::string toString() const;
+@@ -43,7 +38,7 @@ class UidRanges {
+     void remove(const UidRanges& other);
+ 
+ private:
+-    std::vector<Range> mRanges;
++    std::vector<android::net::UidRange> mRanges;
+ };
+ 
+ #endif  // NETD_SERVER_UID_RANGES_H
+diff --git a/server/binder/android/net/UidRange.cpp b/server/binder/android/net/UidRange.cpp
+index ecce612..4acb4c0 100644
+--- a/server/binder/android/net/UidRange.cpp
++++ b/server/binder/android/net/UidRange.cpp
+@@ -89,6 +89,13 @@ int32_t UidRange::getStop() const {
+     return mStop;
+ }
+ 
++uint32_t UidRange::length() const {
++    if (mStart == -1 || mStop == -1) {
++        return 0;
++    }
++    return static_cast<uint32_t>(mStop - mStart + 1);
++}
++
+ }  // namespace net
+ 
+ }  // namespace android
+diff --git a/server/binder/android/net/UidRange.h b/server/binder/android/net/UidRange.h
+index 893dc30..c36beed 100644
+--- a/server/binder/android/net/UidRange.h
++++ b/server/binder/android/net/UidRange.h
+@@ -48,6 +48,15 @@ class UidRange : public Parcelable {
+     int32_t getStart() const;
+     int32_t getStop() const;
+ 
++    /**
++     * Additional functions.
++     */
++    uint32_t length() const;
++
++
++    /**
++     * Operators and comparators.
++     */
+     friend bool operator<(const UidRange& lhs, const UidRange& rhs) {
+         return lhs.mStart != rhs.mStart ? (lhs.mStart < rhs.mStart) : (lhs.mStop < rhs.mStop);
+     }
